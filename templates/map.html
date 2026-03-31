@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Radar Viewer</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <style>
+    html, body { height:100%; margin:0; padding:0; }
+    #map { width:100%; height:100%; }
+    .topbar {
+      position: absolute; top:0; left:0; right:0;
+      background:#0077b6; color:white; padding:8px;
+      font-family: sans-serif; font-weight:bold;
+      z-index:1000;
+    }
+    .control-panel {
+      position: absolute; top:60px; left:20px;
+      background:white; padding:10px;
+      border-radius:6px; box-shadow:0 0 6px rgba(0,0,0,0.4);
+      z-index:1000; font-family:sans-serif;
+      font-size: 14px;
+    }
+    .filter-panel {
+      position: absolute; top:60px; right:20px;
+      background:white; padding:10px;
+      border-radius:6px; box-shadow:0 0 6px rgba(0,0,0,0.4);
+      z-index:1000; font-family:sans-serif;
+      font-size: 14px;
+      width: 180px;
+    }
+    .control-panel input, .control-panel select,
+    .filter-panel input, .filter-panel select {
+      margin-top: 3px;
+      margin-bottom: 3px;
+    }
+    .bottom-bar {
+      position: absolute; bottom:10px; left:50%; transform:translateX(-50%);
+      background: rgba(255,255,255,0.9);
+      padding:8px 15px;
+      border-radius:8px;
+      box-shadow:0 0 6px rgba(0,0,0,0.4);
+      font-family: sans-serif;
+      z-index:1000;
+      width: 90%;
+      text-align: center;
+      font-size: 14px;
+    }
+    .bottom-bar button {
+      margin: 0 5px;
+      font-size: 14px;
+      padding: 3px 8px;
+    }
+    #timelineBar {
+      position: relative;
+      height:40px;
+      background:#eee;
+      margin:10px auto;
+      border-radius:6px;
+      width:95%;
+    }
+    #markers div {
+      position:absolute;
+      width:8px;
+      height:8px;
+      border-radius:50%;
+      top:50%;
+      transform:translate(-50%, -50%);
+      cursor:pointer;
+    }
+    /* Loader overlay */
+    #loaderOverlay {
+      display:none;
+      position:fixed;
+      top:0; left:0; right:0; bottom:0;
+      background:rgba(0,0,0,0.6);
+      z-index:2000;
+      justify-content:center;
+      align-items:center;
+      flex-direction:column;
+      font-family:sans-serif;
+      color:white;
+      font-size:22px;
+      font-weight:bold;
+    }
+    .spinner {
+      border: 6px solid #f3f3f3;
+      border-top: 6px solid #0077b6;
+      border-radius: 50%;
+      width: 50px;
+      height: 50px;
+      animation: spin 1s linear infinite;
+      margin-bottom:15px;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    #customDaysInput { display:none; width:60px; margin-left:5px; }
+    #toggleBtn { font-size: 12px; padding: 2px 6px; margin-top:5px; }
+  </style>
+</head>
+<body>
+  <!-- Top menu bar -->
+  <div class="topbar">
+    Radar Viewer |
+    <form action="/" method="post" enctype="multipart/form-data" style="display:inline;">
+      <input type="file" name="radarfiles" multiple onchange="showLoader(); this.form.submit();" />
+    </form>
+  </div>
+
+  <!-- Loader -->
+  <div id="loaderOverlay">
+    <div class="spinner"></div>
+    <div id="loaderText">Loading radar files…</div>
+    <div style="width:80%; background:#ccc; border-radius:6px; margin-top:15px;">
+      <div id="progressBar" style="height:20px; width:0%; background:#0077b6; border-radius:6px;"></div>
+    </div>
+    <div id="progressCount" style="margin-top:8px;">0/0 files</div>
+  </div>
+
+  <!-- Map -->
+  <div id="map">
+    <!-- radar overlay goes here -->
+    <div id="warningBox"
+         style="position:absolute;
+                top:50%; left:50%;
+                transform:translate(-50%,-50%);
+                background:#fff3cd; 
+                color:#856404;
+                padding:12px 20px; 
+                border-radius:6px; 
+                border:1px solid #ffeeba;
+                font-family:sans-serif; 
+                font-size:15px;
+                display:none; 
+                z-index:1500;
+                text-align:center;">
+    </div>
+  </div>
+
+  <!-- Floating top-left panel -->
+  <div class="control-panel">
+    Group:
+    <select id="group" onchange="changeGroup()">
+      {% for g in groups %}
+        <option value="{{ g }}">{{ g }}</option>
+      {% endfor %}
+    </select><br>
+    Product:
+    <select id="field" onchange="changeField()">
+      {% for f in fields %}
+        <option value="{{ f }}">{{ f }}</option>
+      {% endfor %}
+    </select><br>
+    Opacity:
+    <input type="range" id="opacitySlider" min="0" max="100" value="60" oninput="updateOpacity(this.value)" />
+    <span id="opacityValue">60%</span><br>
+    Colormap:
+    <select id="cmap" onchange="changeCmap()">
+      <option value="">Auto</option>
+      <option value="turbo">turbo</option>
+      <option value="seismic">seismic</option>
+      <option value="viridis">viridis</option>
+      <option value="plasma">plasma</option>
+      <option value="twilight_shifted">twilight_shifted</option>
+      <option value="gray">gray</option>
+    </select><br>
+    vmin: <input type="number" id="vmin" style="width:70px;" onblur="applyVminVmax()" />
+    vmax: <input type="number" id="vmax" style="width:70px;" onblur="applyVminVmax()" /><br>
+    <button onclick="resetOverrides()">Reset Auto</button>
+  </div>
+
+  <!-- Floating top-right filter panel -->
+  <div class="filter-panel">
+    <b>Filters</b><br>
+    <label><input type="checkbox" id="useSQI" onchange="applyFilters()"> Enable SQI</label><br>
+    SQI min: <input type="number" id="sqi" style="width:70px;" onblur="applyFilters()" /><br>
+
+    <label><input type="checkbox" id="usePMI" onchange="applyFilters()"> Enable PMI</label><br>
+    PMI min: <input type="number" id="pmi" style="width:70px;" onblur="applyFilters()" /><br>
+
+    <label><input type="checkbox" id="useLOG" onchange="applyFilters()"> Enable LOG</label><br>
+    LOG min: <input type="number" id="log" style="width:70px;" onblur="applyFilters()" /><br>
+
+    <label><input type="checkbox" id="clipRange" onchange="applyFilters()"> Clip to vmin/vmax</label><br>
+    <label><input type="checkbox" id="maskInvalid" onchange="applyFilters()"> Mask NaN/Inf</label><br>
+    <label><input type="checkbox" id="speckle" onchange="applyFilters()"> Remove speckles</label><br>
+    <label><input type="checkbox" id="clutter" onchange="applyFilters()"> Remove clutter</label><br>
+    <label><input type="checkbox" id="dealias" onchange="applyFilters()"> Velocity dealiasing</label><br>
+
+    <button onclick="resetFilters()">Reset Filters</button>
+  </div>
+
+  <!-- Bottom playback bar -->
+  <div class="bottom-bar">
+    <button onclick="prev()">⏮</button>
+    <button onclick="togglePlay()" id="playBtn">▶</button>
+    <button onclick="next()">⏭</button>
+
+    <br>
+    Time Window:
+    <select id="timeWindow" onchange="timeWindowChanged()">
+      <option value="1800">30 min</option>
+      <option value="3600">60 min</option>
+      <option value="86400">1 day</option>
+      <option value="172800">2 days</option>
+      <option value="345600">4 days</option>
+      <option value="604800">1 week</option>
+      <option value="2592000">1 month</option>
+      <option value="31536000">1 year</option>
+      <option value="custom">Custom (days)</option>
+    </select>
+    <input type="number" id="customDaysInput" value="0" min="1" onchange="renderTimeline()" /> days
+
+    <br>
+    <button onclick="toggleTimeline()" id="toggleBtn">Hide Timeline</button>
+
+    <div id="timelineContainer">
+      <div id="timelineBar"><div id="markers"></div></div>
+      <div style="display:flex; justify-content:space-between; font-size:12px; margin-top:4px;">
+        <span id="minTime">--</span>
+        <span id="maxTime">--</span>
+      </div>
+    </div>    
+    <span id="frameText">1/1</span> | <span id="timestamp">--:--</span>
+  </div>
+
+  <script>
+    function showLoader() {
+      const input = document.querySelector('input[type=file]');
+      const files = input.files;
+      if (!files || files.length === 0) return;
+
+      const overlay = document.getElementById("loaderOverlay");
+      const progressBar = document.getElementById("progressBar");
+      const progressCount = document.getElementById("progressCount");
+
+      overlay.style.display = "flex";
+      progressBar.style.width = "0%";
+      progressCount.innerText = `0/${files.length} files`;
+
+      let uploaded = 0;
+      const interval = setInterval(() => {
+        uploaded++;
+        const pct = Math.min((uploaded / files.length) * 100, 100);
+        progressBar.style.width = pct + "%";
+        progressCount.innerText = `${uploaded}/${files.length} files`;
+        if (uploaded >= files.length) clearInterval(interval);
+      }, 200);
+    }
+
+	var map=L.map('map',{zoomControl:false}).setView([{{ extent[0][0] }},{{ extent[0][1] }}],7);
+
+	// --- Basemap layers ---
+	var baseLayers = {
+	  "OpenStreetMap": L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap contributors' }),
+	  "Terrain": L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', {attribution: 'Tiles © Esri & contributors'}),
+	  "Satellite": L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: '© Esri & contributors' }),
+	  "Carto Light": L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/">CARTO</a>',
+    subdomains: 'abcd',
+    maxZoom: 19}),
+    "Carto Dark": L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+    subdomains: 'abcd',
+    maxZoom: 19})
+	};
+
+	// Add default basemap
+	baseLayers["OpenStreetMap"].addTo(map);
+
+	// Basemap switcher control
+	L.control.layers(baseLayers, null, { position: 'bottomleft' }).addTo(map);
+
+	// Zoom control
+	L.control.zoom({position:'bottomright'}).addTo(map);
+
+
+    var radarLayer;
+    var frame = 0;
+    var total = 1;
+    var field = document.getElementById("field").value;
+    var group = document.getElementById("group").value;
+    var playing = false;
+    var timer;
+    var overlayOpacity = 0.6;
+
+    var cmap = "", vmin = "", vmax = "";
+    var filters = {useSQI:false,sqi:"",usePMI:false,pmi:"",useLOG:false,log:"",
+                   clipRange:false,maskInvalid:false,speckle:false,clutter:false,dealias:false};
+
+    var times = {{ times | tojson }};
+    var epochs = {{ epochs | tojson }};
+    var bounds = {{ bounds | tojson }};
+
+	function loadRadar() {
+	  fetch('/radar?group='+encodeURIComponent(group)+
+			'&frame='+frame+
+			'&field='+field+
+			'&cmap='+cmap+
+			'&vmin='+vmin+
+			'&vmax='+vmax+
+			'&filters='+encodeURIComponent(JSON.stringify(filters)))
+		.then(res => {
+		  if (!res.ok) throw new Error("Radar fetch failed");
+		  var extent = res.headers.get("X-Extent").split(",").map(Number);
+		  total = parseInt(res.headers.get("X-Frames"));
+		  var ts = res.headers.get("X-Timestamp");
+		  var warnings=res.headers.get("X-Warnings");
+		  var warningBox=document.getElementById("warningBox");
+		  if(warnings){
+		    warningBox.style.display="block";
+		    warningBox.innerHTML = "⚠️ Issues detected:<br>" + warnings.split(";").map(w => w.trim()).join("<br>");
+		  } else {
+		    warningBox.style.display="none";
+		  }
+
+		  var boundsLatLon = [[extent[0], extent[1]], [extent[2], extent[3]]];
+		  return res.blob().then(b => {
+			var url = URL.createObjectURL(b);
+			if (radarLayer) {
+			  radarLayer.setUrl(url);
+			  radarLayer.setOpacity(overlayOpacity);
+			} else {
+			  radarLayer = L.imageOverlay(url, boundsLatLon, {opacity: overlayOpacity});
+			  radarLayer.addTo(map);
+			  map.fitBounds(boundsLatLon);
+			}
+			document.getElementById("frameText").innerText = (frame+1) + "/" + total;
+			document.getElementById("timestamp").innerText = ts;
+			renderTimeline();
+		  });
+		})
+		.catch(err => console.error(err));
+	}
+
+
+    function updateOpacity(val) {
+      overlayOpacity = val / 100;
+      if (radarLayer) radarLayer.setOpacity(overlayOpacity);
+      document.getElementById("opacityValue").innerText = val + "%";
+    }
+
+    function changeCmap() { cmap = document.getElementById("cmap").value; frame = 0; loadRadar(); }
+    function applyVminVmax() { vmin = document.getElementById("vmin").value; vmax = document.getElementById("vmax").value; frame=0; loadRadar(); }
+    function resetOverrides() {
+      cmap = ""; vmin = ""; vmax = "";
+      document.getElementById("cmap").value = "";
+      document.getElementById("vmin").value = "";
+      document.getElementById("vmax").value = "";
+      frame = 0; loadRadar();
+    }
+
+    function applyFilters() {
+      filters.useSQI = document.getElementById("useSQI").checked;
+      filters.sqi = document.getElementById("sqi").value;
+      filters.usePMI = document.getElementById("usePMI").checked;
+      filters.pmi = document.getElementById("pmi").value;
+      filters.useLOG = document.getElementById("useLOG").checked;
+      filters.log = document.getElementById("log").value;
+      filters.clipRange = document.getElementById("clipRange").checked;
+      filters.maskInvalid = document.getElementById("maskInvalid").checked;
+      filters.speckle = document.getElementById("speckle").checked;
+      filters.clutter = document.getElementById("clutter").checked;
+      filters.dealias = document.getElementById("dealias").checked;
+      frame = 0; loadRadar();
+    }
+    function resetFilters() {
+      for (let k in filters) filters[k] = (typeof filters[k] === "boolean" ? false : "");
+      document.querySelectorAll(".filter-panel input").forEach(el => {
+        if (el.type === "checkbox") el.checked = false;
+        if (el.type === "number") el.value = "";
+      });
+      frame = 0; loadRadar();
+    }
+
+    function timeWindowChanged() {
+      var sel = document.getElementById("timeWindow").value;
+      var customBox = document.getElementById("customDaysInput");
+      if (sel === "custom") { customBox.style.display = "inline-block"; }
+      else { customBox.style.display = "none"; }
+      renderTimeline();
+    }
+
+    function renderTimeline() {
+      var container = document.getElementById("markers");
+      container.innerHTML = "";
+      if (!epochs[group] || epochs[group].length === 0) return;
+
+      var minT = bounds[group]["min"];
+      var maxT = bounds[group]["max"];
+
+      var sel = document.getElementById("timeWindow").value;
+      if (sel === "custom") {
+        var custom = parseInt(document.getElementById("customDaysInput").value);
+        if (!isNaN(custom) && custom > 0) {
+          var win = custom * 86400;
+          minT = Math.max(maxT - win, minT);
+        }
+      } else {
+        var win = parseInt(sel);
+        if (!isNaN(win)) { minT = Math.max(maxT - win, minT); }
+      }
+
+      var minDate = new Date(minT * 1000).toISOString().replace("T", " ").substring(0, 19);
+      var maxDate = new Date(maxT * 1000).toISOString().replace("T", " ").substring(0, 19);
+      document.getElementById("minTime").innerText = minDate;
+      document.getElementById("maxTime").innerText = maxDate;
+
+      epochs[group].forEach((t, i) => {
+        if (!t) return;
+        if (t < minT || t > maxT) return;
+        var pct = ((t - minT) / (maxT - minT)) * 100;
+        var dot = document.createElement("div");
+        dot.style.left = pct + "%";
+        dot.style.background = (i === frame ? "red" : "black");
+        dot.title = times[group][i];
+        dot.onclick = () => { frame = i; loadRadar(); };
+        container.appendChild(dot);
+      });
+    }
+
+    function toggleTimeline() {
+      var container = document.getElementById("timelineContainer");
+      var btn = document.getElementById("toggleBtn");
+      if (container.style.display === "none") {
+        container.style.display = "block"; btn.innerText = "Hide Timeline";
+      } else {
+        container.style.display = "none"; btn.innerText = "Show Timeline";
+      }
+    }
+
+    function prev(){ frame = Math.max(0, frame-1); loadRadar(); }
+    function next(){ frame = frame+1; if (frame >= total) frame=0; loadRadar(); }
+    function changeField(){ field = document.getElementById("field").value; frame=0; loadRadar(); }
+    function changeGroup(){ group = document.getElementById("group").value; frame=0; loadRadar(); }
+
+    function togglePlay() {
+      playing = !playing;
+      document.getElementById("playBtn").innerText = playing ? "⏸" : "▶";
+      if (playing) {
+        timer = setInterval(() => { frame++; if(frame>=total) frame=0; loadRadar(); }, 1000);
+      } else {
+        clearInterval(timer);
+      }
+    }
+
+    loadRadar();
+  </script>
+</body>
+</html>
